@@ -1,0 +1,36 @@
+{
+  "name": "strake",
+  "version": "0.1.0",
+  "description": "CLI for Strake — the vault between your real API keys and the AI tools you hand them to.",
+  "bin": {
+    "strake": "src/index.js"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/strakelabs/strake-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/strakelabs/community/issues"
+  },
+  "homepage": "https://strake.sh",
+  "license": "MIT",
+  "author": "Dalton Solutions, LLC",
+  "keywords": [
+    "strake",
+    "api-keys",
+    "proxy",
+    "openai",
+    "anthropic",
+    "cli"
+  ]
+}
