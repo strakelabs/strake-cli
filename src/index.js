@@ -284,15 +284,17 @@ async function run(args) {
   }
   const { endpoint } = await apiRequest("GET", `/endpoints/${subdomain}`);
 
+  // Only set env vars matching the endpoint's wire protocol. Setting both
+  // OPENAI_* and ANTHROPIC_* hijacks SDKs that auto-pick up whichever is
+  // present — e.g. pointing `claude` at an openai endpoint breaks its
+  // connection to the real Anthropic API.
+  const envOverrides = endpoint.provider === "anthropic"
+    ? { ANTHROPIC_BASE_URL: endpoint.url, ANTHROPIC_AUTH_TOKEN: token }
+    : { OPENAI_BASE_URL: `${endpoint.url}/v1`, OPENAI_API_KEY: token };
+
   const child = spawn(rest[0], rest.slice(1), {
     stdio: "inherit",
-    env: {
-      ...processEnv,
-      OPENAI_BASE_URL: `${endpoint.url}/v1`,
-      OPENAI_API_KEY: token,
-      ANTHROPIC_BASE_URL: endpoint.url,
-      ANTHROPIC_AUTH_TOKEN: token,
-    },
+    env: { ...processEnv, ...envOverrides },
   });
   child.on("exit", (code) => exit(code ?? 0));
 }
