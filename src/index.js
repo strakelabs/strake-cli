@@ -7,7 +7,7 @@
 import { spawn } from "node:child_process";
 import { readFile, writeFile, mkdir, chmod } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout, exit, argv, env as processEnv } from "node:process";
@@ -16,34 +16,47 @@ const API_BASE = processEnv.STRAKE_API_BASE || "https://app.strake.sh";
 const CONFIG_DIR = join(homedir(), ".config", "strake");
 const CONFIG_PATH = join(CONFIG_DIR, "config.json");
 
-const BOLD = "\x1b[1m";
-const DIM = "\x1b[2m";
-const RED = "\x1b[31m";
-const GREEN = "\x1b[32m";
-const YELLOW = "\x1b[33m";
-const RESET = "\x1b[0m";
+// Respect NO_COLOR (https://no-color.org)
+const NC = !!processEnv.NO_COLOR;
+const BOLD   = NC ? "" : "\x1b[1m";
+const DIM    = NC ? "" : "\x1b[2m";
+const RED    = NC ? "" : "\x1b[31m";
+const GREEN  = NC ? "" : "\x1b[32m";
+const YELLOW = NC ? "" : "\x1b[33m";
+const RESET  = NC ? "" : "\x1b[0m";
+
+// ---- main dispatch ----
 
 async function main() {
-  const [, , command, ...args] = argv;
+  const [, , topCmd, ...args] = argv;
   try {
-    switch (command) {
-      case "login": return await login(args);
-      case "logout": return await logout();
-      case "whoami": return await whoami();
+    switch (topCmd) {
+      // Noun-first groups
+      case "auth":     return await authCmd(args);
+      case "endpoint": return await endpointCmd(args);
+      case "token":    return await tokenCmd(args);
+      case "config":   return await configCmd(args);
+
+      // Flat aliases (kept for back-compat)
+      case "login":    return await authLogin(args);
+      case "logout":   return await authLogout();
+      case "whoami":   return await authWhoami();
       case "endpoints":
-      case "list": return await listEndpoints();
-      case "connect": return await connect(args);
-      case "get": return await getEndpoint(args);
-      case "env": return await envCmd(args);
-      case "run": return await run(args);
-      case "tokens": return await tokensCmd(args);
-      case "rotate-key": return await rotateUpstreamKey(args);
+      case "list":     return await endpointList(args);
+      case "connect":  return await endpointCreate(args);
+      case "get":      return await endpointShow(args);
       case "delete":
-      case "revoke": return await deleteEndpoint(args);
+      case "revoke":   return await endpointDelete(args);
+      case "rotate-key": return await endpointRotateKey(args);
+      case "tokens":   return await tokenCmd(args);  // tokens → token group
+      case "env":      return await endpointEnv(args);
+      case "run":      return await run(args);
+
       case "help":
       case "--help":
       case "-h":
-      case undefined: return printHelp();
+      case undefined:  return printHelp();
+
       case "version":
       case "--version":
       case "-v": {
@@ -51,8 +64,9 @@ async function main() {
         console.log(pkg.version);
         return;
       }
+
       default:
-        console.error(`${RED}Unknown command:${RESET} ${command}`);
+        console.error(`${RED}Unknown command:${RESET} ${topCmd}`);
         printHelp();
         exit(1);
     }
@@ -63,114 +77,86 @@ async function main() {
   }
 }
 
-function printHelp() {
-  console.log(`${BOLD}strake${RESET} — CLI for https://strake.sh
+// ---- group dispatchers ----
 
-${BOLD}USAGE${RESET}
-  strake <command> [options]
-
-${BOLD}COMMANDS${RESET}
-  login [--token <pat>]          Save a personal access token. If --token is
-                                 omitted you'll be prompted.
-  logout                         Delete local credentials.
-  whoami                         Print the user the token belongs to.
-
-  endpoints                      List your endpoints.
-  connect <provider>             Create an endpoint. Prompts for the key and a label.
-                                 provider: openai | anthropic | gemini | xai | openrouter | custom
-  get <subdomain>                Show an endpoint's details + its tokens.
-  delete <subdomain>             Delete an endpoint (irreversible).
-
-  env <subdomain>                Print export lines for OPENAI_BASE_URL +
-                                 OPENAI_API_KEY. Requires a token for the
-                                 endpoint, either via --token or a new one
-                                 issued on the fly (opt in with --mint).
-  run <subdomain> -- <cmd...>    Run <cmd> with Strake env vars set.
-
-  tokens add <subdomain> [--label]   Mint a new bearer token for an endpoint.
-  tokens revoke <subdomain> <id>     Revoke one.
-  tokens rotate <subdomain> <id> [--label]
-                                  Mint a new token + revoke the old one in
-                                  a single command. Returns the new plaintext.
-
-  rotate-key <subdomain>          Paste a new upstream provider key.
-                                  Strake URL + bearer tokens stay the same.
-
-${BOLD}ENVIRONMENT${RESET}
-  STRAKE_API_BASE   Override the API origin (default: https://app.strake.sh)
-  STRAKE_DEBUG      Set to see full error stacks.
-
-${BOLD}CONFIG${RESET}
-  ${CONFIG_PATH}
-
-Issues or feature requests: https://github.com/strakelabs/community`);
-}
-
-// ---- config ----
-
-async function loadConfig() {
-  if (!existsSync(CONFIG_PATH)) return null;
-  try {
-    return JSON.parse(await readFile(CONFIG_PATH, "utf8"));
-  } catch {
-    return null;
+async function authCmd(args) {
+  const sub = args[0];
+  switch (sub) {
+    case "login":  return await authLogin(args.slice(1));
+    case "logout": return await authLogout();
+    case "whoami": return await authWhoami();
+    default:
+      throw new Error("usage: strake auth <login|logout|whoami>");
   }
 }
 
-async function saveConfig(cfg) {
-  await mkdir(CONFIG_DIR, { recursive: true });
-  await writeFile(CONFIG_PATH, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
-  await chmod(CONFIG_PATH, 0o600);
+async function endpointCmd(args) {
+  const sub = args[0];
+  const rest = args.slice(1);
+  switch (sub) {
+    case "list":                   return await endpointList(rest);
+    case "create":                 return await endpointCreate(rest);
+    case "show":
+    case "describe":               return await endpointShow(rest);
+    case "delete":                 return await endpointDelete(rest);
+    case "rotate-key":             return await endpointRotateKey(rest);
+    case "env":                    return await endpointEnv(rest);
+    default:
+      throw new Error("usage: strake endpoint <list|create|show|delete|rotate-key|env> …");
+  }
 }
 
-async function requireToken() {
-  const cfg = await loadConfig();
-  if (!cfg?.token) {
-    throw new Error(`not logged in. Mint a token at ${API_BASE}/dashboard/settings and run \`strake login --token …\``);
+async function tokenCmd(args) {
+  const sub = args[0];
+  const rest = args.slice(1);
+  switch (sub) {
+    case "add":    return await tokenAdd(rest);
+    case "list":   return await tokenList(rest);
+    case "revoke": return await tokenRevoke(rest);
+    case "rotate": return await tokenRotate(rest);
+    default:
+      throw new Error("usage: strake token <add|list|revoke|rotate> …");
   }
-  return cfg.token;
 }
 
-// ---- api ----
-
-async function apiRequest(method, path, { token, body } = {}) {
-  const t = token || (await requireToken());
-  const init = {
-    method,
-    headers: { Authorization: `Bearer ${t}` },
-  };
-  if (body !== undefined) {
-    init.headers["content-type"] = "application/json";
-    init.body = JSON.stringify(body);
+async function configCmd(args) {
+  const sub = args[0] || "show";
+  switch (sub) {
+    case "path":
+      console.log(CONFIG_PATH);
+      return;
+    case "show": {
+      const cfg = await loadConfig();
+      if (!cfg?.token) {
+        console.log(`${DIM}(not logged in — run \`strake auth login\`)${RESET}`);
+        return;
+      }
+      console.log(`email     ${cfg.email ?? "—"}`);
+      console.log(`token     ${cfg.token.slice(0, 6)}…${cfg.token.slice(-4)}  ${DIM}(masked)${RESET}`);
+      console.log(`api_base  ${cfg.api_base || API_BASE}`);
+      console.log(`path      ${CONFIG_PATH}`);
+      return;
+    }
+    default:
+      throw new Error("usage: strake config <show|path>");
   }
-  const response = await fetch(`${API_BASE}/api/v1${path}`, init);
-  if (response.status === 204) return null;
-  const text = await response.text();
-  let parsed;
-  try { parsed = text ? JSON.parse(text) : {}; } catch { parsed = { error: { message: text } }; }
-  if (!response.ok) {
-    const msg = parsed?.error?.message || `${response.status} ${response.statusText}`;
-    throw new Error(msg);
-  }
-  return parsed;
 }
 
-// ---- commands ----
+// ---- auth commands ----
 
-async function login(args) {
+async function authLogin(args) {
   let token = flag(args, "--token");
   if (!token) {
     console.log(`Mint a personal access token at ${BOLD}${API_BASE}/dashboard/settings${RESET}, then paste it below.`);
     token = (await prompt("Token: ", { silent: true })).trim();
   }
   if (!token) throw new Error("no token provided");
-  // Validate with /me
   const me = await apiRequest("GET", "/me", { token });
   await saveConfig({ token, email: me.user.email, api_base: API_BASE });
   console.log(`${GREEN}Logged in as${RESET} ${me.user.email}.`);
 }
 
-async function logout() {
+async function authLogout() {
   if (!existsSync(CONFIG_PATH)) {
     console.log("Not logged in.");
     return;
@@ -179,15 +165,22 @@ async function logout() {
   console.log("Logged out.");
 }
 
-async function whoami() {
+async function authWhoami() {
   const me = await apiRequest("GET", "/me");
   console.log(me.user.email);
 }
 
-async function listEndpoints() {
+// ---- endpoint commands ----
+
+async function endpointList(args) {
+  const json = args.includes("--json");
   const { endpoints } = await apiRequest("GET", "/endpoints");
+  if (json) {
+    console.log(JSON.stringify(endpoints, null, 2));
+    return;
+  }
   if (endpoints.length === 0) {
-    console.log(`${DIM}(no endpoints yet — try \`strake connect openai\`)${RESET}`);
+    console.log(`${DIM}(no endpoints yet — try \`strake endpoint create openai\`)${RESET}`);
     return;
   }
   const rows = endpoints.map((e) => [
@@ -199,7 +192,7 @@ async function listEndpoints() {
   printTable(["SUBDOMAIN", "LABEL", "PROVIDER", "CREATED"], rows);
 }
 
-async function connect(args) {
+async function endpointCreate(args) {
   const provider = args[0];
   if (!provider) throw new Error("provider required (openai | anthropic | gemini | xai | openrouter | custom)");
   const label = await prompt(`Label (optional) [e.g. Cursor]: `);
@@ -220,10 +213,15 @@ async function connect(args) {
   console.log(`Try it:\n  ${DIM}$${RESET} eval "$(strake env ${result.endpoint.subdomain} --token ${result.token.plaintext})"`);
 }
 
-async function getEndpoint(args) {
+async function endpointShow(args) {
   const subdomain = args[0];
   if (!subdomain) throw new Error("subdomain required");
+  const json = args.includes("--json");
   const { endpoint, tokens } = await apiRequest("GET", `/endpoints/${subdomain}`);
+  if (json) {
+    console.log(JSON.stringify({ endpoint, tokens }, null, 2));
+    return;
+  }
   console.log(`${BOLD}${endpoint.label ?? "Unlabeled"}${RESET}  (${endpoint.subdomain})`);
   console.log(`  URL:         ${endpoint.url}`);
   console.log(`  Provider:    ${endpoint.provider}`);
@@ -235,12 +233,39 @@ async function getEndpoint(args) {
   if (active.length === 0) {
     console.log(`  ${DIM}(no active tokens)${RESET}`);
   } else {
-    const rows = active.map((t) => [t.id, t.label, t.preview ?? "—", new Date(t.created_at).toISOString().slice(0, 10)]);
+    const rows = active.map((t) => [t.id, t.label ?? "—", t.preview ?? "—", new Date(t.created_at).toISOString().slice(0, 10)]);
     printTable(["ID", "LABEL", "PREVIEW", "CREATED"], rows, "  ");
   }
 }
 
-async function envCmd(args) {
+async function endpointDelete(args) {
+  const subdomain = args[0];
+  if (!subdomain) throw new Error("subdomain required");
+  const yes = args.includes("--yes") || args.includes("-y");
+  if (!yes) {
+    const confirm = (await prompt(`Delete endpoint ${BOLD}${subdomain}${RESET}? This can't be undone. Type the subdomain to confirm: `)).trim();
+    if (confirm !== subdomain) {
+      console.log("Aborted.");
+      return;
+    }
+  }
+  await apiRequest("DELETE", `/endpoints/${subdomain}`);
+  console.log(`${GREEN}Deleted.${RESET}`);
+}
+
+async function endpointRotateKey(args) {
+  const subdomain = args[0];
+  if (!subdomain) throw new Error("usage: strake endpoint rotate-key <subdomain>");
+  const { endpoint } = await apiRequest("GET", `/endpoints/${subdomain}`);
+  console.log(`Rotating upstream ${providerLabel(endpoint.provider)} key on ${BOLD}${subdomain}${RESET}.`);
+  console.log(`${DIM}Strake URL and bearer tokens stay the same.${RESET}`);
+  const apiKey = (await prompt(`New ${providerLabel(endpoint.provider)} API key: `, { silent: true })).trim();
+  if (!apiKey) throw new Error("api key required");
+  await apiRequest("POST", `/endpoints/${subdomain}/credential/rotate`, { body: { api_key: apiKey } });
+  console.log(`${GREEN}Rotated.${RESET} The next request will use the new upstream key.`);
+}
+
+async function endpointEnv(args) {
   const subdomain = args[0];
   if (!subdomain) throw new Error("subdomain required");
   const explicit = flag(args, "--token");
@@ -257,11 +282,85 @@ async function envCmd(args) {
     exit(1);
   }
   const { endpoint } = await apiRequest("GET", `/endpoints/${subdomain}`);
-  // OpenAI-shaped env vars are the most widely supported. Users on Anthropic-
-  // SDK flows should pass --provider, but for v1 we stick with the defaults.
   console.log(`export OPENAI_BASE_URL="${endpoint.url}/v1"`);
   console.log(`export OPENAI_API_KEY="${token}"`);
 }
+
+// ---- token commands ----
+
+async function tokenAdd(args) {
+  const subdomain = args[0];
+  if (!subdomain) throw new Error("usage: strake token add <subdomain> [--label <label>]");
+  const label = flag(args, "--label");
+  const json = args.includes("--json");
+  const { token } = await apiRequest("POST", `/endpoints/${subdomain}/tokens`, {
+    body: label ? { label } : {},
+  });
+  if (json) {
+    console.log(JSON.stringify({ id: token.id, plaintext: token.plaintext }));
+    return;
+  }
+  console.log(`\n${GREEN}Token created.${RESET} ${DIM}(shown once)${RESET}\n`);
+  console.log(`  ${BOLD}${token.plaintext}${RESET}`);
+}
+
+async function tokenList(args) {
+  const subdomain = args[0];
+  if (!subdomain) throw new Error("usage: strake token list <subdomain>");
+  const json = args.includes("--json");
+  const { tokens } = await apiRequest("GET", `/endpoints/${subdomain}`);
+  const active = tokens.filter((t) => t.revoked_at === null);
+  if (json) {
+    console.log(JSON.stringify(active, null, 2));
+    return;
+  }
+  if (active.length === 0) {
+    console.log(`${DIM}(no active tokens)${RESET}`);
+    return;
+  }
+  const rows = active.map((t) => [t.id, t.label ?? "—", t.preview ?? "—", new Date(t.created_at).toISOString().slice(0, 10)]);
+  printTable(["ID", "LABEL", "PREVIEW", "CREATED"], rows);
+}
+
+async function tokenRevoke(args) {
+  const subdomain = args[0];
+  const id = args[1];
+  if (!subdomain || !id) throw new Error("usage: strake token revoke <subdomain> <token-id> [--yes]");
+  const yes = args.includes("--yes") || args.includes("-y");
+  if (!yes && stdin.isTTY) {
+    const answer = (await prompt(`Revoke token ${BOLD}${id}${RESET} on ${BOLD}${subdomain}${RESET}? [y/N] `)).trim();
+    if (!answer.toLowerCase().startsWith("y")) {
+      console.log("Aborted.");
+      return;
+    }
+  }
+  await apiRequest("DELETE", `/endpoints/${subdomain}/tokens/${id}`);
+  console.log(`${GREEN}Revoked.${RESET}`);
+}
+
+async function tokenRotate(args) {
+  const subdomain = args[0];
+  const oldId = args[1];
+  if (!subdomain || !oldId) throw new Error("usage: strake token rotate <subdomain> <old-token-id> [--label <label>]");
+  const label = flag(args, "--label");
+  const json = args.includes("--json");
+  const { token } = await apiRequest("POST", `/endpoints/${subdomain}/tokens`, {
+    body: label ? { label } : {},
+  });
+  try {
+    await apiRequest("DELETE", `/endpoints/${subdomain}/tokens/${oldId}`);
+  } catch (err) {
+    console.error(`${YELLOW}warn:${RESET} minted the new token but failed to revoke ${oldId} (${err.message}). Revoke it manually with \`strake token revoke ${subdomain} ${oldId}\`.`);
+  }
+  if (json) {
+    console.log(JSON.stringify({ id: token.id, plaintext: token.plaintext }));
+    return;
+  }
+  console.log(`\n${GREEN}Rotated.${RESET} ${DIM}(new token shown once)${RESET}\n`);
+  console.log(`  ${BOLD}${token.plaintext}${RESET}`);
+}
+
+// ---- run command ----
 
 async function run(args) {
   const sepIndex = args.indexOf("--");
@@ -331,8 +430,6 @@ async function run(args) {
       // swallow — user can prune from the dashboard
     }
   };
-  // Forward SIGINT/SIGTERM to the child so it can shut down cleanly; the
-  // child's exit handler is what actually triggers revocation + exit.
   for (const sig of ["SIGINT", "SIGTERM"]) {
     process.on(sig, () => { try { child.kill(sig); } catch {} });
   }
@@ -342,75 +439,121 @@ async function run(args) {
   });
 }
 
-async function tokensCmd(args) {
-  const sub = args[0];
-  switch (sub) {
-    case "add": {
-      const subdomain = args[1];
-      if (!subdomain) throw new Error("usage: strake tokens add <subdomain> [--label <label>]");
-      const label = flag(args, "--label");
-      const { token } = await apiRequest("POST", `/endpoints/${subdomain}/tokens`, {
-        body: label ? { label } : {},
-      });
-      console.log(`\n${GREEN}Token created.${RESET} ${DIM}(shown once)${RESET}\n`);
-      console.log(`  ${BOLD}${token.plaintext}${RESET}`);
-      return;
-    }
-    case "revoke": {
-      const subdomain = args[1];
-      const id = args[2];
-      if (!subdomain || !id) throw new Error("usage: strake tokens revoke <subdomain> <token-id>");
-      await apiRequest("DELETE", `/endpoints/${subdomain}/tokens/${id}`);
-      console.log(`${GREEN}Revoked.${RESET}`);
-      return;
-    }
-    case "rotate": {
-      const subdomain = args[1];
-      const oldId = args[2];
-      if (!subdomain || !oldId) throw new Error("usage: strake tokens rotate <subdomain> <old-token-id> [--label <label>]");
-      const label = flag(args, "--label");
-      const { token } = await apiRequest("POST", `/endpoints/${subdomain}/tokens`, {
-        body: label ? { label } : {},
-      });
-      try {
-        await apiRequest("DELETE", `/endpoints/${subdomain}/tokens/${oldId}`);
-      } catch (err) {
-        console.error(`${YELLOW}warn:${RESET} minted the new token but failed to revoke ${oldId} (${err.message}). You can revoke it manually later.`);
-      }
-      console.log(`\n${GREEN}Rotated.${RESET} ${DIM}(new token shown once)${RESET}\n`);
-      console.log(`  ${BOLD}${token.plaintext}${RESET}`);
-      return;
-    }
-    default:
-      throw new Error("usage: strake tokens <add|revoke|rotate> …");
+// ---- help ----
+
+function printHelp() {
+  const row = (left, right) => {
+    const pad = Math.max(0, 38 - stripAnsi(left).length);
+    return `  ${left}${" ".repeat(pad)}${DIM}${right}${RESET}`;
+  };
+
+  console.log(`${BOLD}strake${RESET} — Encrypted API key proxy for AI tools
+  https://strake.sh
+
+${BOLD}USAGE${RESET}
+  strake <group> <command> [options]
+
+${BOLD}AUTH${RESET}
+${row("auth login [--token <pat>]",    "Save a personal access token")}
+${row("auth logout",                   "Clear local credentials")}
+${row("auth whoami",                   "Print the current user's email")}
+
+${BOLD}ENDPOINT${RESET}
+${row("endpoint list",                 "List your endpoints")}
+${row("endpoint create <provider>",    "Create an endpoint (prompts for key + label)")}
+${row("endpoint show <subdomain>",     "Show endpoint details and active tokens")}
+${row("endpoint delete <subdomain>",   "Delete an endpoint (irreversible)")}
+${row("endpoint rotate-key <sub>",     "Swap the upstream provider key")}
+${row("endpoint env <subdomain>",      "Print export lines for shell (needs --token or --mint)")}
+
+${BOLD}TOKEN${RESET}
+${row("token add <subdomain>",         "Mint a new bearer token")}
+${row("token list <subdomain>",        "List active tokens")}
+${row("token revoke <sub> <id>",       "Revoke a token (prompts unless --yes)")}
+${row("token rotate <sub> <id>",       "Mint new + revoke old atomically")}
+
+${BOLD}OTHER${RESET}
+${row("run <subdomain> -- <cmd>",      "Run a command with Strake env vars injected")}
+${row("config show",                   "Show current config (token is masked)")}
+${row("config path",                   "Print config file path")}
+
+${BOLD}EXAMPLES${RESET}
+  strake auth login
+  strake endpoint create openai
+  strake endpoint show my-proxy
+  strake token add my-proxy --label "cursor"
+  strake token list my-proxy
+  strake run my-proxy -- python chat.py
+  eval "$(strake endpoint env my-proxy --mint)"
+
+${BOLD}FLAGS${RESET}
+${row("--json",     "Machine-readable JSON output (read commands)")}
+${row("--yes, -y",  "Skip confirmation prompts (destructive actions)")}
+
+${BOLD}ENVIRONMENT${RESET}
+${row("STRAKE_TOKEN",     "API token (alternative to auth login)")}
+${row("STRAKE_API_BASE",  "Override the API origin (default: https://app.strake.sh)")}
+${row("STRAKE_DEBUG",     "Print full error stacks")}
+${row("NO_COLOR",         "Disable ANSI colors")}
+
+${BOLD}PROVIDERS${RESET}
+  openai | anthropic | gemini | xai | openrouter | custom
+
+${BOLD}CONFIG${RESET}
+  ${CONFIG_PATH}
+
+Issues: https://github.com/strakelabs/community`);
+}
+
+// ---- config ----
+
+async function loadConfig() {
+  if (!existsSync(CONFIG_PATH)) return null;
+  try {
+    return JSON.parse(await readFile(CONFIG_PATH, "utf8"));
+  } catch {
+    return null;
   }
 }
 
-async function rotateUpstreamKey(args) {
-  const subdomain = args[0];
-  if (!subdomain) throw new Error("usage: strake rotate-key <subdomain>");
-  const { endpoint } = await apiRequest("GET", `/endpoints/${subdomain}`);
-  console.log(`Rotating upstream ${providerLabel(endpoint.provider)} key on ${BOLD}${subdomain}${RESET}.`);
-  console.log(`${DIM}Strake URL and bearer tokens stay the same.${RESET}`);
-  const apiKey = (await prompt(`New ${providerLabel(endpoint.provider)} API key: `, { silent: true })).trim();
-  if (!apiKey) throw new Error("api key required");
-  await apiRequest("POST", `/endpoints/${subdomain}/credential/rotate`, { body: { api_key: apiKey } });
-  console.log(`${GREEN}Rotated.${RESET} The next request will use the new upstream key.`);
+async function saveConfig(cfg) {
+  await mkdir(CONFIG_DIR, { recursive: true });
+  await writeFile(CONFIG_PATH, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
+  await chmod(CONFIG_PATH, 0o600);
 }
 
-async function deleteEndpoint(args) {
-  const subdomain = args[0];
-  if (!subdomain) throw new Error("subdomain required");
-  const yes = args.includes("--yes") || args.includes("-y");
-  if (!yes) {
-    const confirm = (await prompt(`Delete endpoint ${BOLD}${subdomain}${RESET}? This can't be undone. Type the subdomain to confirm: `)).trim();
-    if (confirm !== subdomain) {
-      console.log("Aborted.");
-      return;
-    }
+async function requireToken() {
+  // STRAKE_TOKEN env var takes precedence over the config file (useful in CI).
+  if (processEnv.STRAKE_TOKEN) return processEnv.STRAKE_TOKEN;
+  const cfg = await loadConfig();
+  if (!cfg?.token) {
+    throw new Error(`not logged in. Run \`strake auth login\` or set STRAKE_TOKEN.`);
   }
-  await apiRequest("DELETE", `/endpoints/${subdomain}`);
-  console.log(`${GREEN}Deleted.${RESET}`);
+  return cfg.token;
+}
+
+// ---- api ----
+
+async function apiRequest(method, path, { token, body } = {}) {
+  const t = token || (await requireToken());
+  const init = {
+    method,
+    headers: { Authorization: `Bearer ${t}` },
+  };
+  if (body !== undefined) {
+    init.headers["content-type"] = "application/json";
+    init.body = JSON.stringify(body);
+  }
+  const response = await fetch(`${API_BASE}/api/v1${path}`, init);
+  if (response.status === 204) return null;
+  const text = await response.text();
+  let parsed;
+  try { parsed = text ? JSON.parse(text) : {}; } catch { parsed = { error: { message: text } }; }
+  if (!response.ok) {
+    const msg = parsed?.error?.message || `${response.status} ${response.statusText}`;
+    throw new Error(msg);
+  }
+  return parsed;
 }
 
 // ---- utilities ----
@@ -434,8 +577,6 @@ function providerLabel(p) {
 
 async function prompt(question, { silent = false } = {}) {
   if (silent && stdin.isTTY) {
-    // Poor-man's silent read — readline doesn't support it natively. We mute
-    // the terminal's own echo for the duration of the answer.
     stdout.write(question);
     return new Promise((resolve) => {
       let buf = "";
