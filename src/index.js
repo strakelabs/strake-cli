@@ -37,6 +37,7 @@ async function main() {
       case "env": return await envCmd(args);
       case "run": return await run(args);
       case "tokens": return await tokensCmd(args);
+      case "rotate-key": return await rotateUpstreamKey(args);
       case "delete":
       case "revoke": return await deleteEndpoint(args);
       case "help":
@@ -88,6 +89,12 @@ ${BOLD}COMMANDS${RESET}
 
   tokens add <subdomain> [--label]   Mint a new bearer token for an endpoint.
   tokens revoke <subdomain> <id>     Revoke one.
+  tokens rotate <subdomain> <id> [--label]
+                                  Mint a new token + revoke the old one in
+                                  a single command. Returns the new plaintext.
+
+  rotate-key <subdomain>          Paste a new upstream provider key.
+                                  Strake URL + bearer tokens stay the same.
 
 ${BOLD}ENVIRONMENT${RESET}
   STRAKE_API_BASE   Override the API origin (default: https://app.strake.sh)
@@ -312,9 +319,38 @@ async function tokensCmd(args) {
       console.log(`${GREEN}Revoked.${RESET}`);
       return;
     }
+    case "rotate": {
+      const subdomain = args[1];
+      const oldId = args[2];
+      if (!subdomain || !oldId) throw new Error("usage: strake tokens rotate <subdomain> <old-token-id> [--label <label>]");
+      const label = flag(args, "--label");
+      const { token } = await apiRequest("POST", `/endpoints/${subdomain}/tokens`, {
+        body: label ? { label } : {},
+      });
+      try {
+        await apiRequest("DELETE", `/endpoints/${subdomain}/tokens/${oldId}`);
+      } catch (err) {
+        console.error(`${YELLOW}warn:${RESET} minted the new token but failed to revoke ${oldId} (${err.message}). You can revoke it manually later.`);
+      }
+      console.log(`\n${GREEN}Rotated.${RESET} ${DIM}(new token shown once)${RESET}\n`);
+      console.log(`  ${BOLD}${token.plaintext}${RESET}`);
+      return;
+    }
     default:
-      throw new Error("usage: strake tokens <add|revoke> …");
+      throw new Error("usage: strake tokens <add|revoke|rotate> …");
   }
+}
+
+async function rotateUpstreamKey(args) {
+  const subdomain = args[0];
+  if (!subdomain) throw new Error("usage: strake rotate-key <subdomain>");
+  const { endpoint } = await apiRequest("GET", `/endpoints/${subdomain}`);
+  console.log(`Rotating upstream ${providerLabel(endpoint.provider)} key on ${BOLD}${subdomain}${RESET}.`);
+  console.log(`${DIM}Strake URL and bearer tokens stay the same.${RESET}`);
+  const apiKey = (await prompt(`New ${providerLabel(endpoint.provider)} API key: `, { silent: true })).trim();
+  if (!apiKey) throw new Error("api key required");
+  await apiRequest("POST", `/endpoints/${subdomain}/credential/rotate`, { body: { api_key: apiKey } });
+  console.log(`${GREEN}Rotated.${RESET} The next request will use the new upstream key.`);
 }
 
 async function deleteEndpoint(args) {

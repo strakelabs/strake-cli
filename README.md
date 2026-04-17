@@ -119,6 +119,25 @@ strake tokens revoke abc123def456 ctok_abc123
 
 Lost a token? `strake tokens add` issues a new one; revoke the old label-mate with `strake tokens revoke`. The endpoint URL and the real upstream key never change.
 
+Or do both in one step:
+
+```sh
+strake tokens rotate abc123def456 ctok_old --label "Cursor (rotated)"
+# → prints the new plaintext once, revokes ctok_old.
+```
+
+---
+
+## Rotate the upstream provider key
+
+When OpenAI, Anthropic, or another provider rotates *your* real API key, paste the new one without touching the Strake URL or any downstream tooling:
+
+```sh
+strake rotate-key abc123def456
+# → prompts for the new key (input hidden), validates against the provider,
+#   re-encrypts and swaps it in. Next request uses the new key automatically.
+```
+
 ---
 
 ## Command reference
@@ -135,6 +154,8 @@ Lost a token? `strake tokens add` issues a new one; revoke the old label-mate wi
 | `strake run <subdomain> -- <cmd...>` | Run `<cmd>` with `OPENAI_*` and `ANTHROPIC_*` env vars set. Mints a token on the fly. |
 | `strake tokens add <subdomain> [--label X]` | Mint a new bearer token (shown once). |
 | `strake tokens revoke <subdomain> <token-id>` | Revoke a single token. |
+| `strake tokens rotate <subdomain> <token-id> [--label X]` | Mint a new token **and** revoke the old one in one command. |
+| `strake rotate-key <subdomain>` | Paste a new upstream provider key. Strake URL + bearer tokens stay the same. |
 | `strake delete <subdomain>` | Irreversibly delete an endpoint. |
 | `strake help` | Full help. |
 | `strake --version` | Print the installed version. |
