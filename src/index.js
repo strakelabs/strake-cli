@@ -276,11 +276,13 @@ async function run(args) {
 
   const explicit = flag(before, "--token");
   let token = explicit;
+  let ephemeralTokenId = null;
   if (!token) {
     const { token: t } = await apiRequest("POST", `/endpoints/${subdomain}/tokens`, {
       body: { label: `strake-cli run ${rest[0]}` },
     });
     token = t.plaintext;
+    ephemeralTokenId = t.id;
   }
   const { endpoint } = await apiRequest("GET", `/endpoints/${subdomain}`);
 
@@ -316,7 +318,28 @@ async function run(args) {
     stdio: "inherit",
     env: { ...processEnv, ...envOverrides },
   });
-  child.on("exit", (code) => exit(code ?? 0));
+
+  // Revoke the ephemeral token when the child exits so it doesn't linger in
+  // the dashboard. Best-effort — a SIGKILL or machine crash still orphans it.
+  let revoked = false;
+  const revokeEphemeral = async () => {
+    if (revoked || !ephemeralTokenId) return;
+    revoked = true;
+    try {
+      await apiRequest("DELETE", `/endpoints/${subdomain}/tokens/${ephemeralTokenId}`);
+    } catch {
+      // swallow — user can prune from the dashboard
+    }
+  };
+  // Forward SIGINT/SIGTERM to the child so it can shut down cleanly; the
+  // child's exit handler is what actually triggers revocation + exit.
+  for (const sig of ["SIGINT", "SIGTERM"]) {
+    process.on(sig, () => { try { child.kill(sig); } catch {} });
+  }
+  child.on("exit", async (code) => {
+    await revokeEphemeral();
+    exit(code ?? 0);
+  });
 }
 
 async function tokensCmd(args) {
