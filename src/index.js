@@ -288,11 +288,31 @@ async function run(args) {
   // OPENAI_* and ANTHROPIC_* hijacks SDKs that auto-pick up whichever is
   // present — e.g. pointing `claude` at an openai endpoint breaks its
   // connection to the real Anthropic API.
-  const envOverrides = endpoint.provider === "anthropic"
+  const isAnthropic = endpoint.provider === "anthropic";
+  const envOverrides = isAnthropic
     ? { ANTHROPIC_BASE_URL: endpoint.url, ANTHROPIC_AUTH_TOKEN: token }
     : { OPENAI_BASE_URL: `${endpoint.url}/v1`, OPENAI_API_KEY: token };
 
-  const child = spawn(rest[0], rest.slice(1), {
+  // Codex ignores OPENAI_BASE_URL and, if the user is logged in via ChatGPT,
+  // its built-in `openai` provider sends the ChatGPT OAuth JWT as the bearer
+  // instead of OPENAI_API_KEY (env_key is None on that provider). That makes
+  // Strake 401 the request. Define a custom model provider per-invocation so
+  // codex reads OPENAI_API_KEY for auth and routes to the Strake base URL.
+  let cmd = rest[0];
+  let cmdArgs = rest.slice(1);
+  if (cmd === "codex" && !isAnthropic) {
+    cmdArgs = [
+      "-c", "model_provider=strake",
+      "-c", `model_providers.strake.name="Strake"`,
+      "-c", `model_providers.strake.base_url="${endpoint.url}/v1"`,
+      "-c", `model_providers.strake.env_key="OPENAI_API_KEY"`,
+      "-c", `model_providers.strake.wire_api="responses"`,
+      "-c", `model_providers.strake.requires_openai_auth=false`,
+      ...cmdArgs,
+    ];
+  }
+
+  const child = spawn(cmd, cmdArgs, {
     stdio: "inherit",
     env: { ...processEnv, ...envOverrides },
   });
