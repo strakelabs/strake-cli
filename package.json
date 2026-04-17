@@ -1,6 +1,6 @@
 {
   "name": "@strakelabs/strake",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "CLI for Strake — the vault between your real API keys and the AI tools you hand them to.",
   "bin": {
     "strake": "src/index.js"

@@ -483,6 +483,8 @@ ${BOLD}EXAMPLES${RESET}
   strake endpoint show my-proxy
   strake token add my-proxy --label "cursor"
   strake token list my-proxy
+  strake run my-proxy -- claude
+  strake run my-proxy -- codex
   strake run my-proxy -- python chat.py
   eval "$(strake endpoint env my-proxy --mint)"
 
