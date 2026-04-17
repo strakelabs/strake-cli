@@ -5,8 +5,10 @@ The official CLI for [Strake](https://strake.sh) — a vault that stands between
 ## Install
 
 ```sh
-npm install -g strake
+npm install -g @strakelabs/strake
 ```
+
+The installed command is `strake` (not the scoped package name).
 
 Node 18 or newer.
 

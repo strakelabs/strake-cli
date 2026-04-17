@@ -1,5 +1,5 @@
 {
-  "name": "strake",
+  "name": "@strakelabs/strake",
   "version": "0.1.0",
   "description": "CLI for Strake — the vault between your real API keys and the AI tools you hand them to.",
   "bin": {
